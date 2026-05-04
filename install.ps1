@@ -52,7 +52,7 @@ else {
 # ---------------------------------------------------------------------------
 $filesToCopy = @(
     'fork-gitlab.ps1',
-    'run-mr.bat',
+    'run-mr-pick.bat',
     'run-open-repo.bat',
     'run-open-branch.bat'
 )
@@ -71,12 +71,12 @@ foreach ($file in $filesToCopy) {
 # ---------------------------------------------------------------------------
 $newCommands = @(
     [PSCustomObject]@{
-        name       = 'GitLab/Create Merge Request'
+        name       = 'GitLab/Create MR'
         target     = 'ref'
         refTargets = @('localbranch')
         action     = [PSCustomObject]@{
             type        = 'process'
-            path        = (Join-Path $installDir 'run-mr.bat')
+            path        = (Join-Path $installDir 'run-mr-pick.bat')
             args        = '"$name"'
             showOutput  = $false
             waitForExit = $false
@@ -136,7 +136,7 @@ Write-Host ''
 Write-Host '  Installation complete!' -ForegroundColor Green
 Write-Host ''
 Write-Host '  GitLab menu items added to Fork:' -ForegroundColor Yellow
-Write-Host '    Right-click a LOCAL BRANCH  ->  GitLab > Create Merge Request'
+Write-Host '    Right-click a LOCAL BRANCH  ->  GitLab > Create MR'
 Write-Host '    Right-click a LOCAL BRANCH  ->  GitLab > Open Branch on GitLab'
 Write-Host '    Right-click the REPOSITORY  ->  GitLab > Open Repository on GitLab'
 Write-Host ''

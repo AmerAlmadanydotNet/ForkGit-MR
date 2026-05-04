@@ -1,11 +1,11 @@
 [
   {
-    "name": "GitLab/Create Merge Request",
+    "name": "GitLab/Create MR",
     "target": "ref",
     "refTargets": ["localbranch"],
     "action": {
       "type": "process",
-      "path": "%LOCALAPPDATA%\\Fork-GitLab\\run-mr.bat",
+      "path": "%LOCALAPPDATA%\\Fork-GitLab\\run-mr-pick.bat",
       "args": "\"$name\"",
       "showOutput": false,
       "waitForExit": false
