@@ -1,0 +1,37 @@
+[
+  {
+    "name": "GitLab/Create Merge Request",
+    "target": "ref",
+    "refTargets": ["localbranch"],
+    "action": {
+      "type": "process",
+      "path": "%LOCALAPPDATA%\\Fork-GitLab\\run-mr.bat",
+      "args": "\"$name\"",
+      "showOutput": false,
+      "waitForExit": false
+    }
+  },
+  {
+    "name": "GitLab/Open Repository on GitLab",
+    "target": "repository",
+    "action": {
+      "type": "process",
+      "path": "%LOCALAPPDATA%\\Fork-GitLab\\run-open-repo.bat",
+      "args": "",
+      "showOutput": false,
+      "waitForExit": false
+    }
+  },
+  {
+    "name": "GitLab/Open Branch on GitLab",
+    "target": "ref",
+    "refTargets": ["localbranch"],
+    "action": {
+      "type": "process",
+      "path": "%LOCALAPPDATA%\\Fork-GitLab\\run-open-branch.bat",
+      "args": "\"$name\"",
+      "showOutput": false,
+      "waitForExit": false
+    }
+  }
+]
