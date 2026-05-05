@@ -15,7 +15,7 @@
 #>
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('create-mr', 'create-mr-pick', 'open-repo', 'open-branch')]
+    [ValidateSet('create-mr', 'create-mr-pick', 'open-repo', 'open-branch', 'configure-token')]
     [string]$Action,
 
     [string]$Branch = ''
@@ -35,6 +35,111 @@ function Show-Error {
         [System.Windows.MessageBoxButton]::OK,
         [System.Windows.MessageBoxImage]::Error
     ) | Out-Null
+}
+
+# ---------------------------------------------------------------------------
+# Config: store / retrieve the GitLab Personal Access Token
+# ---------------------------------------------------------------------------
+$script:configFile = Join-Path $env:LOCALAPPDATA 'Fork-GitLab\config.json'
+
+function Get-StoredToken {
+    if (Test-Path $script:configFile) {
+        try {
+            $cfg = Get-Content $script:configFile -Raw | ConvertFrom-Json
+            if ($cfg.PSObject.Properties['token']) { return $cfg.token }
+        } catch { }
+    }
+    return $null
+}
+
+function Save-StoredToken {
+    param([string]$Token)
+    $favs = Get-FavoriteBranches
+    @{ token = $Token; favorites = @($favs) } | ConvertTo-Json | Set-Content $script:configFile -Encoding UTF8
+}
+
+function Get-FavoriteBranches {
+    if (Test-Path $script:configFile) {
+        try {
+            $cfg = Get-Content $script:configFile -Raw | ConvertFrom-Json
+            if ($cfg.PSObject.Properties['favorites']) {
+                return [string[]]@($cfg.favorites | Where-Object { $_ })
+            }
+        } catch { }
+    }
+    return [string[]]@()
+}
+
+function Save-FavoriteBranches {
+    param([string[]]$Favorites)
+    $token = Get-StoredToken
+    if ($null -eq $token) { $token = '' }
+    @{ token = $token; favorites = @($Favorites) } | ConvertTo-Json | Set-Content $script:configFile -Encoding UTF8
+}
+
+# ---------------------------------------------------------------------------
+# Show a dialog to enter / update the GitLab Personal Access Token
+# ---------------------------------------------------------------------------
+function Show-TokenDialog {
+    param([string]$CurrentToken = '')
+    Add-Type -AssemblyName PresentationFramework
+    Add-Type -AssemblyName PresentationCore
+    Add-Type -AssemblyName WindowsBase
+
+    [xml]$txaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="GitLab - Personal Access Token"
+        Width="480" Height="210"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Topmost="True">
+    <Grid Margin="20,16,20,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="6"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="16"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" TextWrapping="Wrap"
+                   Text="Enter your GitLab Personal Access Token (api scope required). It is stored locally on this machine only."/>
+        <TextBlock Grid.Row="2" Text="Personal Access Token:" FontWeight="SemiBold"/>
+        <TextBox Name="TokenBox" Grid.Row="4" Height="26"
+                 VerticalContentAlignment="Center" Padding="4,0"
+                 BorderBrush="#ABADB3" BorderThickness="1"/>
+        <TextBlock Grid.Row="5" FontSize="11" Foreground="#555"
+                   Text="Create one at: GitLab > Settings > Access Tokens  (select api scope)"
+                   Margin="0,4,0,0"/>
+        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Name="OkBtn" Content="Save" MinWidth="80" Height="28"
+                    Padding="8,0" Margin="0,0,8,0" IsDefault="True"/>
+            <Button Name="CancelBtn" Content="Cancel"
+                    Width="70" Height="28" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>
+'@
+    $treader         = [System.Xml.XmlNodeReader]::new($txaml)
+    $script:tkWin    = [System.Windows.Markup.XamlReader]::Load($treader)
+    $script:tkBox    = $script:tkWin.FindName('TokenBox')
+    $tOkBtn          = $script:tkWin.FindName('OkBtn')
+
+    if (-not [string]::IsNullOrWhiteSpace($CurrentToken)) {
+        $script:tkBox.Text = $CurrentToken
+    }
+
+    $script:tkResult = $null
+    $tOkBtn.Add_Click({
+        $script:tkResult = $script:tkBox.Text.Trim()
+        $script:tkWin.DialogResult = $true
+    })
+    $script:tkWin.Add_Loaded({ $script:tkBox.Focus() | Out-Null ; $script:tkBox.SelectAll() })
+
+    if ($script:tkWin.ShowDialog()) { return $script:tkResult }
+    return $null
 }
 
 # ---------------------------------------------------------------------------
@@ -87,19 +192,27 @@ switch ($Action) {
             Show-Error "Branch name was not supplied. Please right-click a local branch and choose GitLab > Open Branch on GitLab."
             exit 1
         }
+        # Strip 'origin/' prefix for remote branches (leave other slashes intact e.g. feature/my-branch)
+        $Branch = $Branch -replace '^origin/', ''
         $r = Get-GitLabRemote
         $enc = [Uri]::EscapeDataString($Branch)
         Start-Process "https://$($r.Host)/$($r.Path)/-/tree/$enc"
     }
 
     'create-mr-pick' {
+        $logPath = Join-Path $env:TEMP 'forkgit-debug.log'
+        "[$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')] create-mr-pick started. Branch='$Branch'" | Set-Content $logPath -Encoding UTF8
+
         if ([string]::IsNullOrWhiteSpace($Branch)) {
             Show-Error "Branch name was not supplied. Please right-click a local branch and choose GitLab > Create MR."
             exit 1
         }
-        $r = Get-GitLabRemote
+        # Strip 'origin/' prefix for remote branches (leave other slashes intact e.g. feature/my-branch)
+        $Branch = $Branch -replace '^origin/', ''
+        "[$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')] Branch after strip='$Branch'" | Add-Content $logPath -Encoding UTF8
 
-        # Collect all branch names (local + remote), excluding HEAD and the source branch
+        $r = Get-GitLabRemote
+        "[$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')] Remote: Host=$($r.Host) Path=$($r.Path)" | Add-Content $logPath -Encoding UTF8
         $allBranches = @(
             & git branch -a --format='%(refname:short)' 2>$null |
             Where-Object { $_ -notmatch 'HEAD' } |
@@ -112,8 +225,7 @@ switch ($Action) {
             Show-Error "No other branches found to merge into."
             exit 1
         }
-
-        # Build WPF picker dialog with search filter
+        "[$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')] Branches found: $($allBranches.Count)" | Add-Content $logPath -Encoding UTF8
         Add-Type -AssemblyName PresentationFramework
         Add-Type -AssemblyName PresentationCore
         Add-Type -AssemblyName WindowsBase
@@ -176,6 +288,7 @@ switch ($Action) {
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <TextBox Name="SearchBox" Grid.Column="0" Height="26"
                      VerticalContentAlignment="Center" Padding="4,0"
@@ -185,6 +298,11 @@ switch ($Action) {
                 <TextBlock Text="&#x1F50D;" HorizontalAlignment="Center"
                            VerticalAlignment="Center" FontSize="13"/>
             </Border>
+            <Button Name="FavBtn" Grid.Column="2" Width="30" Height="26"
+                    Content="&#x2606;" FontSize="15" Padding="0" Margin="4,0,0,0"
+                    ToolTip="Toggle favourite (max 6)" Background="Transparent"
+                    BorderBrush="#ABADB3" BorderThickness="1"
+                    Focusable="False" IsTabStop="False"/>
         </Grid>
 
         <!-- Filtered branch list -->
@@ -195,7 +313,7 @@ switch ($Action) {
 
         <!-- Buttons -->
         <StackPanel Grid.Row="16" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Name="OkBtn" Content="Open in GitLab"
+            <Button Name="OkBtn" Content="Create MR"
                     MinWidth="120" Height="28" Padding="8,0" Margin="0,0,8,0" IsDefault="True"/>
             <Button Name="CancelBtn" Content="Cancel"
                     Width="70" Height="28" IsCancel="True"/>
@@ -208,16 +326,25 @@ switch ($Action) {
         $script:list      = $script:mrWin.FindName('BranchList')
         $script:search    = $script:mrWin.FindName('SearchBox')
         $script:titleBox  = $script:mrWin.FindName('TitleBox')
-        $script:draftChk       = $script:mrWin.FindName('DraftCheck')
-        $script:deleteBranchChk = $script:mrWin.FindName('DeleteBranchCheck')
-        $okBtn                 = $script:mrWin.FindName('OkBtn')
+        $script:draftChk        = $script:mrWin.FindName('DraftCheck')
+        $script:deleteBranchChk  = $script:mrWin.FindName('DeleteBranchCheck')
+        $script:favBtn           = $script:mrWin.FindName('FavBtn')
+        $okBtn                   = $script:mrWin.FindName('OkBtn')
 
         $script:mrWin.FindName('SourceLabel').Text = $Branch
         $script:allBranches = $allBranches
 
+        # Helper: strip '★ ' prefix to get the real branch name
+        function Get-BranchName {
+            param([string]$Item)
+            $star = [char]0x2605
+            return $Item -replace "^$star ", ''
+        }
+
         # Helper: build the standard MR title from source + current target selection
         function Get-MrTitle {
-            $target = if ($script:list.SelectedItem) { $script:list.SelectedItem } else { '...' }
+            $raw    = if ($script:list.SelectedItem) { $script:list.SelectedItem } else { '...' }
+            $target = Get-BranchName $raw
             return "From $Branch into $target"
         }
 
@@ -245,35 +372,75 @@ switch ($Action) {
         # Helper: rebuild the ListBox with only matching branches
         function Update-List {
             param([string]$Filter)
+            $prevReal = if ($script:list.SelectedItem) { Get-BranchName $script:list.SelectedItem } else { $null }
             $script:list.Items.Clear()
-            $matches = if ([string]::IsNullOrWhiteSpace($Filter)) {
+            $all = if ([string]::IsNullOrWhiteSpace($Filter)) {
                 $script:allBranches
             } else {
                 $script:allBranches | Where-Object { $_ -like "*$Filter*" }
             }
-            foreach ($b in $matches) { [void]$script:list.Items.Add($b) }
-            if ($script:list.Items.Count -gt 0) {
-                $script:list.SelectedIndex = 0
+            $favSet  = [string[]]@($script:favs)
+            $favs    = @($all | Where-Object { $favSet -contains $_ })
+            $nonFavs = @($all | Where-Object { $favSet -notcontains $_ })
+            foreach ($b in $favs)    { [void]$script:list.Items.Add("$([char]0x2605) $b") }
+            foreach ($b in $nonFavs) { [void]$script:list.Items.Add($b) }
+            # Restore selection by real name
+            if ($prevReal) {
+                $match = $script:list.Items | Where-Object { (Get-BranchName $_) -eq $prevReal } | Select-Object -First 1
+                if ($match) { $script:list.SelectedItem = $match; return }
+            }
+            if ($script:list.Items.Count -gt 0) { $script:list.SelectedIndex = 0 }
+        }
+
+        # Helper: update the ★ button to reflect current selection's fav state
+        function Update-FavBtn {
+            $real = $script:lastRealBranch
+            if (-not $real) { $script:favBtn.Content = [char]0x2606; $script:favBtn.IsEnabled = $false; return }
+            $script:favBtn.IsEnabled = $true
+            $script:favBtn.Content = if ($script:favs -contains $real) { [char]0x2605 } else { [char]0x2606 }
+            if (-not ($script:favs -contains $real)) {
+                $script:favBtn.IsEnabled = (@($script:favs).Count -lt 6)
             }
         }
+
+        $script:selectedTarget  = $null
+        $script:updatingTitle   = $false
+        $script:lastRealBranch  = $null
+        $script:favs            = [string[]]@(Get-FavoriteBranches)
 
         # Seed list; pre-select preferred default
         Update-List ''
         $preferred = @('main', 'master', 'develop') |
                      Where-Object { $allBranches -contains $_ } |
                      Select-Object -First 1
-        if ($preferred) { $script:list.SelectedItem = $preferred }
+        if ($preferred) {
+            $prefItem = $script:list.Items | Where-Object { (Get-BranchName $_) -eq $preferred } | Select-Object -First 1
+            if ($prefItem) { $script:list.SelectedItem = $prefItem }
+        }
+        $sel = $script:list.SelectedItem
+        $script:lastRealBranch = if ($sel) { Get-BranchName $sel } else { $null }
+        Update-FavBtn
+
+        # Store function refs as script-scoped variables so event handlers can call them
+        $script:fnUpdateList   = ${function:Update-List}
+        $script:fnUpdateFavBtn = ${function:Update-FavBtn}
+        $script:fnGetBranch    = ${function:Get-BranchName}
+        $script:fnSaveFavs     = ${function:Save-FavoriteBranches}
+        $script:fnGetMrTitle   = ${function:Get-MrTitle}
 
         # Filter as user types
         $script:search.Add_TextChanged({
-            Update-List $script:search.Text
+            & $script:fnUpdateList $script:search.Text
         })
 
         # When selection changes, update the title automatically (unless user edited it)
         $script:list.Add_SelectionChanged({
+            $sel = $script:list.SelectedItem
+            $script:lastRealBranch = if ($sel) { & $script:fnGetBranch $sel } else { $null }
+            & $script:fnUpdateFavBtn
             if (-not $script:titleEdited) {
                 $script:updatingTitle = $true
-                $script:titleBox.Text = Get-MrTitle
+                $script:titleBox.Text = & $script:fnGetMrTitle
                 $script:updatingTitle = $false
             }
         })
@@ -287,12 +454,37 @@ switch ($Action) {
             }
         })
 
+        # Toggle favourite on the selected branch
+        $script:favBtn.Add_Click({
+            $favLog = Join-Path $env:TEMP 'forkgit-debug.log'
+            try {
+                $real = $script:lastRealBranch
+                if (-not $real) {
+                    $real = if ($script:list.SelectedItem) { & $script:fnGetBranch $script:list.SelectedItem } else { $null }
+                }
+                "FAV CLICK: real='$real' favs='$($script:favs -join ',')'" | Add-Content $favLog -Encoding UTF8
+                if (-not $real) { return }
+                if ($script:favs -contains $real) {
+                    $script:favs = [string[]]@($script:favs | Where-Object { $_ -ne $real })
+                } else {
+                    if (@($script:favs).Count -lt 6) {
+                        $script:favs = [string[]](@($script:favs) + $real)
+                    }
+                }
+                & $script:fnSaveFavs $script:favs
+                & $script:fnUpdateList $script:search.Text
+                & $script:fnUpdateFavBtn
+                "FAV DONE: favs='$($script:favs -join ',')'" | Add-Content $favLog -Encoding UTF8
+            } catch {
+                "FAV ERROR: $_" | Add-Content $favLog -Encoding UTF8
+            }
+        })
+
         $script:selectedTarget = $null
-        $script:updatingTitle  = $false
         $okBtn.Add_Click({
             if ($script:list.SelectedItem) {
-                $script:selectedTarget       = $script:list.SelectedItem
-                $script:mrWin.DialogResult   = $true
+                $script:selectedTarget     = & $script:fnGetBranch $script:list.SelectedItem
+                $script:mrWin.DialogResult = $true
             }
         })
 
@@ -300,20 +492,119 @@ switch ($Action) {
         $script:mrWin.Add_Loaded({ $script:titleBox.Focus() | Out-Null ; $script:titleBox.SelectAll() })
 
         $result = $script:mrWin.ShowDialog()
+        "[$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')] ShowDialog result='$result' selectedTarget='$script:selectedTarget'" | Add-Content $logPath -Encoding UTF8
 
         if ($result -and -not [string]::IsNullOrWhiteSpace($script:selectedTarget)) {
-            $encSource = [Uri]::EscapeDataString($Branch)
-            $encTarget = [Uri]::EscapeDataString($script:selectedTarget)
-            $encTitle  = [Uri]::EscapeDataString($script:titleBox.Text.Trim())
-            $wip       = if ($script:draftChk.IsChecked) { 1 } else { 0 }
-            $delBranch = if ($script:deleteBranchChk.IsChecked) { 1 } else { 0 }
-            $url = "https://$($r.Host)/$($r.Path)/-/merge_requests/new" +
-                   "?merge_request%5Bsource_branch%5D=$encSource" +
-                   "&merge_request%5Btarget_branch%5D=$encTarget" +
-                   "&merge_request%5Btitle%5D=$encTitle" +
-                   "&merge_request%5Bwip%5D=$wip" +
-                   "&merge_request%5Bforce_remove_source_branch%5D=$delBranch"
-            Start-Process $url
+            # Ensure we have a token — prompt if missing
+            $token = Get-StoredToken
+            if ([string]::IsNullOrWhiteSpace($token)) {
+                $token = Show-TokenDialog
+                if ([string]::IsNullOrWhiteSpace($token)) { exit 0 }
+                Save-StoredToken $token
+            }
+
+            $title        = $script:titleBox.Text.Trim()
+            $removeSource = [bool]($script:deleteBranchChk.IsChecked)
+            $encodedPath  = [Uri]::EscapeDataString($r.Path)
+            $apiUrl       = "https://$($r.Host)/api/v4/projects/$encodedPath/merge_requests"
+            $body         = @{
+                source_branch        = $Branch
+                target_branch        = $script:selectedTarget
+                title                = $title
+                remove_source_branch = $removeSource
+            } | ConvertTo-Json
+
+            $maxAttempts = 3
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                $success = $false
+                try {
+                    $mr = Invoke-RestMethod -Method POST -Uri $apiUrl `
+                        -Headers @{ 'PRIVATE-TOKEN' = $token } `
+                        -Body $body -ContentType 'application/json'
+                    # Log success for troubleshooting
+                    $logPath = Join-Path $env:TEMP 'forkgit-debug.log'
+                    "[$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')] SUCCESS`nURL: $apiUrl`nMR iid: $($mr.iid)`nweb_url: $($mr.web_url)`nstate: $($mr.state)" |
+                        Set-Content $logPath -Encoding UTF8
+                    if (-not [string]::IsNullOrWhiteSpace($mr.web_url)) {
+                        # Copy "Title\nURL" to clipboard
+                        "$($mr.title)`n$($mr.web_url)" | Set-Clipboard
+                        Start-Process $mr.web_url
+                    } else {
+                        Show-Error "Merge request created but could not get its URL.`nCheck: $apiUrl"
+                    }
+                    $success = $true
+                } catch {
+                    $statusCode = 0
+                    $errMsg     = $_.Exception.Message
+                    $rawBody    = ''
+                    if ($_.Exception.Response) {
+                        $statusCode = [int]$_.Exception.Response.StatusCode
+                        try {
+                            $stream  = $_.Exception.Response.GetResponseStream()
+                            $rawBody = [System.IO.StreamReader]::new($stream).ReadToEnd()
+                            $errObj  = $rawBody | ConvertFrom-Json
+                            if ($errObj.PSObject.Properties['message']) {
+                                $m = $errObj.message
+                                if ($m -is [string]) {
+                                    $errMsg = $m
+                                } elseif ($m -is [System.Management.Automation.PSCustomObject]) {
+                                    $errMsg = ($m.PSObject.Properties.Value | ForEach-Object { $_ -join ', ' }) -join '; '
+                                } else {
+                                    $errMsg = ($m | Out-String).Trim()
+                                }
+                            } elseif ($errObj.PSObject.Properties['error']) {
+                                $errMsg = $errObj.error
+                            } elseif ($errObj.PSObject.Properties['errors']) {
+                                $errMsg = ($errObj.errors | Out-String).Trim()
+                            } else {
+                                $errMsg = $rawBody
+                            }
+                        } catch { $errMsg = $rawBody }
+                    }
+                    # Write debug log for troubleshooting
+                    $logPath = Join-Path $env:TEMP 'forkgit-debug.log'
+                    "[$(Get-Date -f 'yyyy-MM-dd HH:mm:ss')] HTTP $statusCode`nURL: $apiUrl`nBody: $body`nResponse: $rawBody" |
+                        Set-Content $logPath -Encoding UTF8
+                    if ($statusCode -eq 401) {
+                        Save-StoredToken ''
+                        $token = Show-TokenDialog -CurrentToken ''
+                        if ([string]::IsNullOrWhiteSpace($token)) { break }
+                        Save-StoredToken $token
+                        # loop will retry with new token
+                    } else {
+                        Show-Error "Failed to create merge request (HTTP $statusCode):`n$errMsg"
+                        break
+                    }
+                }
+                if ($success) { break }
+            }
+        }
+    }
+
+    'configure-token' {
+        Add-Type -AssemblyName PresentationFramework
+        Add-Type -AssemblyName PresentationCore
+        Add-Type -AssemblyName WindowsBase
+        $current = Get-StoredToken
+        if ($null -eq $current) { $current = '' }
+        $newToken = Show-TokenDialog -CurrentToken $current
+        if ($null -ne $newToken) {
+            Save-StoredToken $newToken
+            if ([string]::IsNullOrWhiteSpace($newToken)) {
+                [System.Windows.MessageBox]::Show(
+                    'Token cleared.',
+                    'ForkGit – GitLab',
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Information
+                ) | Out-Null
+            } else {
+                [System.Windows.MessageBox]::Show(
+                    'Token saved successfully.',
+                    'ForkGit – GitLab',
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Information
+                ) | Out-Null
+            }
         }
     }
 }

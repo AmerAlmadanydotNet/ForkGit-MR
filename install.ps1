@@ -54,7 +54,8 @@ $filesToCopy = @(
     'fork-gitlab.ps1',
     'run-mr-pick.bat',
     'run-open-repo.bat',
-    'run-open-branch.bat'
+    'run-open-branch.bat',
+    'run-configure-token.bat'
 )
 foreach ($file in $filesToCopy) {
     $src = Join-Path $sourceScripts $file
@@ -73,7 +74,7 @@ $newCommands = @(
     [PSCustomObject]@{
         name       = 'GitLab/Create MR'
         target     = 'ref'
-        refTargets = @('localbranch')
+        refTargets = @('localbranch', 'remotebranch')
         action     = [PSCustomObject]@{
             type        = 'process'
             path        = (Join-Path $installDir 'run-mr-pick.bat')
@@ -96,11 +97,22 @@ $newCommands = @(
     [PSCustomObject]@{
         name       = 'GitLab/Open Branch on GitLab'
         target     = 'ref'
-        refTargets = @('localbranch')
+        refTargets = @('localbranch', 'remotebranch')
         action     = [PSCustomObject]@{
             type        = 'process'
             path        = (Join-Path $installDir 'run-open-branch.bat')
             args        = '"$name"'
+            showOutput  = $false
+            waitForExit = $false
+        }
+    },
+    [PSCustomObject]@{
+        name   = 'GitLab/Configure Token'
+        target = 'repository'
+        action = [PSCustomObject]@{
+            type        = 'process'
+            path        = (Join-Path $installDir 'run-configure-token.bat')
+            args        = ''
             showOutput  = $false
             waitForExit = $false
         }
@@ -139,6 +151,7 @@ Write-Host '  GitLab menu items added to Fork:' -ForegroundColor Yellow
 Write-Host '    Right-click a LOCAL BRANCH  ->  GitLab > Create MR'
 Write-Host '    Right-click a LOCAL BRANCH  ->  GitLab > Open Branch on GitLab'
 Write-Host '    Right-click the REPOSITORY  ->  GitLab > Open Repository on GitLab'
+Write-Host '    Right-click the REPOSITORY  ->  GitLab > Configure Token'
 Write-Host ''
 Write-Host '  Restart Fork to apply the changes.'
 Write-Host ''
