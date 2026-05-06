@@ -132,7 +132,7 @@ if (Test-Path $forkCmdFile) {
     if (-not [string]::IsNullOrWhiteSpace($raw)) {
         $existing = $raw | ConvertFrom-Json
         # Remove any previous GitLab/* commands so we don't duplicate
-        $commands = @($existing | Where-Object { $_.name -notlike 'GitLab/*' })
+        $commands = @($existing | Where-Object { -not $_.PSObject.Properties['name'] -or $_.name -notlike 'GitLab/*' })
         Write-Step 'OK' "Kept $($commands.Count) existing non-GitLab commands"
     }
 }

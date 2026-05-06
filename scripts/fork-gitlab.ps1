@@ -505,9 +505,15 @@ switch ($Action) {
 
             $title        = $script:titleBox.Text.Trim()
             $removeSource = [bool]($script:deleteBranchChk.IsChecked)
-            $encodedPath  = [Uri]::EscapeDataString($r.Path)
-            $apiUrl       = "https://$($r.Host)/api/v4/projects/$encodedPath/merge_requests"
-            $body         = @{
+
+            # Resolve numeric project ID to avoid 405 from POST→GET redirect on encoded paths
+            $encodedPath = [Uri]::EscapeDataString($r.Path)
+            $projectInfo = Invoke-RestMethod -Method GET `
+                -Uri "https://$($r.Host)/api/v4/projects/$encodedPath" `
+                -Headers @{ 'PRIVATE-TOKEN' = $token }
+            $apiUrl = "https://$($r.Host)/api/v4/projects/$($projectInfo.id)/merge_requests"
+
+            $body = @{
                 source_branch        = $Branch
                 target_branch        = $script:selectedTarget
                 title                = $title
