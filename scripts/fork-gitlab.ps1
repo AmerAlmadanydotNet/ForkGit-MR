@@ -15,10 +15,12 @@
 #>
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('create-mr', 'create-mr-pick', 'open-repo', 'open-branch', 'configure-token')]
+    [ValidateSet('create-mr', 'create-mr-pick', 'create-mr-quick', 'open-repo', 'open-branch', 'configure-token')]
     [string]$Action,
 
-    [string]$Branch = ''
+    [string]$Branch = '',
+
+    [string]$Target = ''
 )
 
 Set-StrictMode -Version Latest
@@ -75,6 +77,42 @@ function Save-FavoriteBranches {
     $token = Get-StoredToken
     if ($null -eq $token) { $token = '' }
     @{ token = $token; favorites = @($Favorites) } | ConvertTo-Json | Set-Content $script:configFile -Encoding UTF8
+    Update-ForkQuickMrCommands $Favorites
+}
+
+# ---------------------------------------------------------------------------
+# Rebuild the "GitLab/Create MR into <fav>" entries in Fork's custom-commands.json
+# ---------------------------------------------------------------------------
+function Update-ForkQuickMrCommands {
+    param([string[]]$Favorites)
+    $forkCmdFile = Join-Path $env:LOCALAPPDATA 'Fork\custom-commands.json'
+    $installDir  = Join-Path $env:LOCALAPPDATA 'Fork-GitLab'
+    $quickBat    = Join-Path $installDir 'run-mr-quick.bat'
+    if (-not (Test-Path $forkCmdFile)) { return }
+    try {
+        $raw     = Get-Content $forkCmdFile -Raw -Encoding UTF8
+        $parsed  = $raw | ConvertFrom-Json          # assigns Object[] to variable
+        # Remove old quick-MR entries (piping a variable enumerates it correctly in PS5.1)
+        $commands = @($parsed | Where-Object {
+            -not $_.PSObject.Properties['name'] -or $_.name -notlike 'GitLab/Create MR into *'
+        })
+        # Add one per favourite
+        foreach ($fav in [string[]]@($Favorites | Where-Object { $_ })) {
+            $commands += [PSCustomObject]@{
+                name       = "GitLab/Create MR into $fav"
+                target     = 'ref'
+                refTargets = @('localbranch', 'remotebranch')
+                action     = [PSCustomObject]@{
+                    type        = 'process'
+                    path        = $quickBat
+                    args        = "`"`$name`" `"$fav`""
+                    showOutput  = $false
+                    waitForExit = $false
+                }
+            }
+        }
+        $commands | ConvertTo-Json -Depth 10 | Set-Content $forkCmdFile -Encoding UTF8
+    } catch { }
 }
 
 # ---------------------------------------------------------------------------
@@ -587,7 +625,78 @@ switch ($Action) {
         }
     }
 
-    'configure-token' {
+    'create-mr-quick' {
+        if ([string]::IsNullOrWhiteSpace($Branch)) {
+            Show-Error "Branch name was not supplied."
+            exit 1
+        }
+        if ([string]::IsNullOrWhiteSpace($Target)) {
+            Show-Error "Target branch was not supplied."
+            exit 1
+        }
+        $Branch = $Branch -replace '^origin/', ''
+        $r      = Get-GitLabRemote
+
+        $token = Get-StoredToken
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            Add-Type -AssemblyName PresentationFramework
+            Add-Type -AssemblyName PresentationCore
+            Add-Type -AssemblyName WindowsBase
+            $token = Show-TokenDialog
+            if ([string]::IsNullOrWhiteSpace($token)) { exit 0 }
+            Save-StoredToken $token
+        }
+
+        $encodedPath = [Uri]::EscapeDataString($r.Path)
+        $maxAttempts = 3
+        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            try {
+                $projectInfo = Invoke-RestMethod -Method GET `
+                    -Uri "https://$($r.Host)/api/v4/projects/$encodedPath" `
+                    -Headers @{ 'PRIVATE-TOKEN' = $token }
+                $apiUrl = "https://$($r.Host)/api/v4/projects/$($projectInfo.id)/merge_requests"
+                $body   = @{
+                    source_branch = $Branch
+                    target_branch = $Target
+                    title         = "From $Branch into $Target"
+                } | ConvertTo-Json
+                $mr = Invoke-RestMethod -Method POST -Uri $apiUrl `
+                    -Headers @{ 'PRIVATE-TOKEN' = $token } `
+                    -Body $body -ContentType 'application/json'
+                "$($mr.title)`n$($mr.web_url)" | Set-Clipboard
+                Start-Process $mr.web_url
+                break
+            } catch {
+                $statusCode = 0
+                $errMsg     = $_.Exception.Message
+                if ($_.Exception.Response) {
+                    $statusCode = [int]$_.Exception.Response.StatusCode
+                    try {
+                        $stream  = $_.Exception.Response.GetResponseStream()
+                        $rawBody = [System.IO.StreamReader]::new($stream).ReadToEnd()
+                        $errObj  = $rawBody | ConvertFrom-Json
+                        if ($errObj.PSObject.Properties['message']) {
+                            $m = $errObj.message
+                            $errMsg = if ($m -is [string]) { $m } else {
+                                ($m.PSObject.Properties.Value | ForEach-Object { $_ -join ', ' }) -join '; '
+                            }
+                        }
+                    } catch { }
+                }
+                if ($statusCode -eq 401) {
+                    Add-Type -AssemblyName PresentationFramework
+                    Add-Type -AssemblyName PresentationCore
+                    Add-Type -AssemblyName WindowsBase
+                    Save-StoredToken ''
+                    $token = Show-TokenDialog -CurrentToken ''
+                    if ([string]::IsNullOrWhiteSpace($token)) { break }
+                    Save-StoredToken $token
+                } else {
+                    Show-Error "Failed to create merge request (HTTP $statusCode):`n$errMsg"
+                    break
+                }
+            }
+        }
         Add-Type -AssemblyName PresentationFramework
         Add-Type -AssemblyName PresentationCore
         Add-Type -AssemblyName WindowsBase

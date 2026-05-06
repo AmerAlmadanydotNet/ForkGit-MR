@@ -53,6 +53,7 @@ else {
 $filesToCopy = @(
     'fork-gitlab.ps1',
     'run-mr-pick.bat',
+    'run-mr-quick.bat',
     'run-open-repo.bat',
     'run-open-branch.bat',
     'run-configure-token.bat'
@@ -138,6 +139,36 @@ if (Test-Path $forkCmdFile) {
 }
 
 $commands += $newCommands
+
+# Add any saved favourite-branch quick-MR entries
+$configFile = Join-Path $env:LOCALAPPDATA 'Fork-GitLab\config.json'
+if (Test-Path $configFile) {
+    try {
+        $cfg = Get-Content $configFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($cfg.PSObject.Properties['favorites']) {
+            $quickBat = Join-Path $installDir 'run-mr-quick.bat'
+            foreach ($fav in @($cfg.favorites | Where-Object { $_ })) {
+                $commands += [PSCustomObject]@{
+                    name       = "GitLab/Create MR into $fav"
+                    target     = 'ref'
+                    refTargets = @('localbranch', 'remotebranch')
+                    action     = [PSCustomObject]@{
+                        type        = 'process'
+                        path        = $quickBat
+                        args        = "`"`$name`" `"$fav`""
+                        showOutput  = $false
+                        waitForExit = $false
+                    }
+                }
+            }
+            $favCount = @($cfg.favorites | Where-Object { $_ }).Count
+            if ($favCount -gt 0) {
+                Write-Step 'OK' "Added $favCount quick-MR favourite commands"
+            }
+        }
+    } catch { }
+}
+
 $commands | ConvertTo-Json -Depth 10 | Set-Content -Path $forkCmdFile -Encoding UTF8
 Write-Step 'OK' "Written $($newCommands.Count) GitLab commands to $forkCmdFile"
 
