@@ -656,9 +656,10 @@ switch ($Action) {
                     -Headers @{ 'PRIVATE-TOKEN' = $token }
                 $apiUrl = "https://$($r.Host)/api/v4/projects/$($projectInfo.id)/merge_requests"
                 $body   = @{
-                    source_branch = $Branch
-                    target_branch = $Target
-                    title         = "From $Branch into $Target"
+                    source_branch        = $Branch
+                    target_branch        = $Target
+                    title                = "From $Branch into $Target"
+                    remove_source_branch = $false
                 } | ConvertTo-Json
                 $mr = Invoke-RestMethod -Method POST -Uri $apiUrl `
                     -Headers @{ 'PRIVATE-TOKEN' = $token } `
